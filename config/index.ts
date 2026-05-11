@@ -28,14 +28,6 @@ export const config = {
     directUrl: () => getEnvVar('DIRECT_URL'),
   },
 
-  /** Redis (Upstash) */
-  redis: {
-    url: () => getOptionalEnvVar('UPSTASH_REDIS_REST_URL', ''),
-    token: () => getOptionalEnvVar('UPSTASH_REDIS_REST_TOKEN', ''),
-    isConfigured: () =>
-      !!process.env.UPSTASH_REDIS_REST_URL && !!process.env.UPSTASH_REDIS_REST_TOKEN,
-  },
-
   /** Application */
   app: {
     url: () => getOptionalEnvVar('NEXT_PUBLIC_APP_URL', 'http://localhost:3000'),
@@ -52,12 +44,6 @@ export const config = {
     maxQuantity: 10,
     /** How often the expiry cron runs (in minutes) */
     cronIntervalMinutes: 1,
-    /** Maximum retry attempts for lock acquisition */
-    lockRetryAttempts: 3,
-    /** Delay between lock retry attempts (in ms) */
-    lockRetryDelayMs: 200,
-    /** Distributed lock TTL (in ms) — slightly longer than expected transaction time */
-    lockTtlMs: 10_000,
   },
 
   /** Rate limiting */

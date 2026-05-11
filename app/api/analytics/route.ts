@@ -4,7 +4,6 @@ import { getRecentAuditLogs } from '@/lib/audit/audit-service';
 import { errorToResponse, successResponse } from '@/lib/errors';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { generateTraceId } from '@/utils';
-import { cacheGet, cacheSet, CacheKeys } from '@/lib/redis/cache';
 import type { DashboardStats } from '@/types';
 
 /**
@@ -15,10 +14,6 @@ export async function GET(request: NextRequest) {
 
   try {
     await checkRateLimit(getClientIp(request), 'general');
-
-    // Cache analytics for 30 seconds to reduce DB load
-    const cached = await cacheGet<DashboardStats>(CacheKeys.analytics());
-    if (cached) return successResponse(cached, traceId);
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -70,8 +65,6 @@ export async function GET(request: NextRequest) {
       })),
       recentActivity,
     };
-
-    await cacheSet(CacheKeys.analytics(), stats, 30);
 
     return successResponse(stats, traceId);
   } catch (error) {

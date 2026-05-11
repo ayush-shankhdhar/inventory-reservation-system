@@ -6,18 +6,18 @@
 ![Prisma](https://img.shields.io/badge/Prisma-7.8-teal)
 ![Coverage](https://img.shields.io/badge/Tests-Passed-green)
 
-StockReserve is an enterprise-grade inventory reservation platform engineered for high-concurrency ecommerce scenarios. It ensures data consistency and absolute accuracy when reserving stock across multiple geographically distributed warehouses, utilizing a combination of distributed locking, atomic row-level database operations, and idempotent APIs.
+StockReserve is an enterprise-grade inventory reservation platform engineered for high-concurrency ecommerce scenarios. It ensures data consistency and absolute accuracy when reserving stock across multiple geographically distributed warehouses, utilizing atomic row-level database operations and idempotent APIs.
 
 ## 🚀 Core Features
 
-- **Three-Layer Concurrency Protection**: Uses Redis distributed locks, interactive PostgreSQL transactions, and `SELECT FOR UPDATE` row locking to guarantee no overselling occurs, even on the very last item under severe load.
+- **Advanced Concurrency Protection**: Uses interactive PostgreSQL transactions and `SELECT FOR UPDATE` explicit row locking to guarantee no overselling occurs, even on the very last item under severe concurrent load.
 - **Multi-Warehouse Stock Allocation**: Seamlessly view available inventory from individual warehouses and track aggregate global availability.
 - **Atomic Lifecycle Management**: 
   - **Reserve**: Temporarily increment `reservedStock` and set a time-bound lock.
   - **Confirm**: Permanently reduce both `totalStock` and `reservedStock` upon successful purchase.
   - **Release / Expire**: Decrement `reservedStock` to release inventory back into general availability.
 - **Automated Expiry Engine**: Automated batch cleanup for abandoned reservations via lightweight CRON background processes.
-- **Idempotency Controls**: Protects against transient network errors and duplicate clicks using deterministic payload hashing cached in Redis.
+- **Idempotency Controls**: Protects against transient network errors and duplicate clicks using deterministic payload hashing persisted securely in PostgreSQL.
 - **Real-Time Dashboard**: Live activity feed, inventory status alerts, and automated stock-level triggers.
 
 ---
@@ -29,7 +29,6 @@ StockReserve is an enterprise-grade inventory reservation platform engineered fo
 - **Prisma ORM v7**: Advanced type-safe queries and driver-adapter configuration.
 - **PostgreSQL**: Highly reliable relational data store.
 - **Node-Postgres Adapter (`pg`)**: Connection pooling optimized for extended query protocols used in interactive transactions.
-- **Upstash Redis**: Zero-latency distributed locking, caching, and serverless rate-limiting.
 
 ### Dynamic Frontend
 - **TypeScript**: Rigid static typing across models, payloads, and application logic.
@@ -49,7 +48,6 @@ StockReserve is an enterprise-grade inventory reservation platform engineered fo
 ### 1. Prerequisites
 - **Node.js v20+**
 - A running **PostgreSQL** instance (or a Supabase Project)
-- A running **Redis** instance (or Upstash account)
 
 ### 2. Clone & Install
 ```bash
@@ -64,10 +62,6 @@ Create a `.env` file in the root directory:
 # Database Connection 
 DATABASE_URL="your-postgresql-connection-string"
 DIRECT_URL="your-direct-postgresql-connection-string"
-
-# Redis Connection
-UPSTASH_REDIS_REST_URL="your-redis-url"
-UPSTASH_REDIS_REST_TOKEN="your-redis-token"
 
 # App
 NEXT_PUBLIC_APP_URL="http://localhost:3000"
@@ -124,9 +118,8 @@ Reservations automatically append a 10-minute `expiresAt` TTL. To avoid scanning
 ## 📋 Allo Take-Home Requirements & Implementation Notes
 
 ### 1. Concurrency Guarantees
-The core requirement of "exactly one succeeds for the last item" is managed by tiered locking strategy in `lib/reservations/reservation-service.ts`:
-*   **Redis Distributed Lock**: Provides optimistic, high-throughput concurrency blocking at the edge.
-*   **PostgreSQL `SELECT FOR UPDATE`**: Absolute source-of-truth lock. We serialize the read-and-write state INSIDE the atomic transaction ensuring accurate inventory subtraction without dirty reads.
+The core requirement of "exactly one succeeds for the last item" is managed by our atomic PostgreSQL transaction architecture in `lib/reservations/reservation-service.ts`:
+*   **PostgreSQL `SELECT FOR UPDATE`**: Absolute source-of-truth lock. We serialize the read-and-write state INSIDE the atomic transaction ensuring accurate inventory subtraction without dirty reads. This blocks other transactions on the SAME inventory row from moving forward until processing commits.
 
 ### 2. Reservation Expiry Mechanism (Production Approach)
 Implemented as a **Vercel Cron job / Scheduled Worker** located at `app/api/cron/expire-reservations/route.ts`.
@@ -137,7 +130,7 @@ Implemented as a **Vercel Cron job / Scheduled Worker** located at `app/api/cron
 ### 3. Idempotency (Bonus Feature)
 Designed and integrated via `lib/reservations/idempotency-service.ts` and utilized on reservation mutative endpoints.
 *   **Flow**: Uses `Idempotency-Key` header provided by the client. 
-*   **Storage**: Checks Upstash Redis (fast-path) then queries PostgreSQL `IdempotencyKey` table (durable fallback).
+*   **Storage**: Securely persisted inside the PostgreSQL `IdempotencyKey` table for durability and verification.
 *   **Safety**: Hashes the incoming request payload. If the same key arrives but with a different payload, we throw an explicit `400 ValidationError` preventing accidental reuse across different business actions.
 
 ### 4. Trade-offs & Future Enhancements

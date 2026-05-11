@@ -1,6 +1,5 @@
 import { prisma } from '@/lib/db/prisma';
 import { recordAuditLogBatch, AuditActions } from '@/lib/audit/audit-service';
-import { cacheDeletePattern } from '@/lib/redis/cache';
 
 /**
  * Expiry Service — Automatic reservation cleanup.
@@ -124,10 +123,6 @@ export async function processExpiredReservations(): Promise<ExpiryResult> {
   if (auditEntries.length > 0) {
     recordAuditLogBatch(auditEntries).catch(() => {});
   }
-
-  // Invalidate product/inventory caches
-  cacheDeletePattern('products:*').catch(() => {});
-  cacheDeletePattern('inventory:*').catch(() => {});
 
   console.log(
     `[ExpiryService] Processed ${result.processed} expired reservations: ` +

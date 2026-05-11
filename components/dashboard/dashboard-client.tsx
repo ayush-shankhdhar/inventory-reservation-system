@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Package,
@@ -81,6 +82,11 @@ function ActiveReservationRow({
   reservation: DashboardClientProps['activeReservations'][0];
 }) {
   const { formatted, isUrgent, isExpired } = useCountdown(reservation.expiresAt);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <Link
@@ -94,7 +100,7 @@ function ActiveReservationRow({
         </p>
       </div>
       <Badge variant={isExpired ? 'destructive' : isUrgent ? 'warning' : 'secondary'}>
-        {isExpired ? 'Expired' : formatted}
+        {!mounted ? '--:--' : isExpired ? 'Expired' : formatted}
       </Badge>
     </Link>
   );

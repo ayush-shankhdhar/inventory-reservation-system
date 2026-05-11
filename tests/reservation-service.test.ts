@@ -26,21 +26,7 @@ vi.mock('@/lib/db/prisma', () => ({
   },
 }));
 
-// Mock Redis (no Redis in unit tests)
-vi.mock('@/lib/redis/distributed-lock', () => ({
-  acquireLockWithRetry: vi.fn().mockResolvedValue({ acquired: true, token: 'test-token' }),
-  releaseLock: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock('@/lib/redis/cache', () => ({
-  cacheGet: vi.fn().mockResolvedValue(null),
-  cacheSet: vi.fn(),
-  cacheDelete: vi.fn(),
-  cacheDeletePattern: vi.fn(),
-  CacheKeys: {
-    inventoryByProduct: (id: string) => `inventory:product:${id}`,
-  },
-}));
+// Mock Audit Service
 
 vi.mock('@/lib/audit/audit-service', () => ({
   recordAuditLog: vi.fn(),

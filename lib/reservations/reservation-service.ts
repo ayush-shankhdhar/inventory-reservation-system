@@ -1,6 +1,4 @@
 import { prisma } from '@/lib/db/prisma';
-import { acquireLockWithRetry, releaseLock } from '@/lib/redis/distributed-lock';
-import { cacheDelete, cacheDeletePattern } from '@/lib/redis/cache';
 import { recordAuditLog, AuditActions } from '@/lib/audit/audit-service';
 import { ConflictError, GoneError, NotFoundError, UnprocessableError } from '@/lib/errors';
 import { config } from '@/config';
@@ -19,23 +17,17 @@ import { Prisma } from '@prisma/client';
  *
  * CONCURRENCY STRATEGY (Defense in Depth):
  *
- * Layer 1: Distributed Lock (Redis)
- *   - Serializes access at the application level
- *   - Prevents multiple serverless functions from starting
- *     concurrent transactions on the same inventory row
- *   - Fail-open: if Redis is down, we fall through to Layer 2
- *
- * Layer 2: PostgreSQL Interactive Transaction
+ * Layer 1: PostgreSQL Interactive Transaction
  *   - SERIALIZABLE isolation would be safest but has high
  *     contention cost. We use READ COMMITTED + explicit locking.
  *   - Prisma interactive transaction with timeout
  *
- * Layer 3: Row-Level Locking (SELECT ... FOR UPDATE)
+ * Layer 2: Row-Level Locking (SELECT ... FOR UPDATE)
  *   - Locks the specific inventory row within the transaction
  *   - Other transactions block until the lock is released
  *   - Guarantees that availability check and stock update are atomic
  *
- * Together, these three layers ensure:
+ * Together, these layers ensure:
  * - Two requests for the last unit → exactly one succeeds
  * - No overselling is possible
  * - Failed transactions don't leave partial state
@@ -112,23 +104,11 @@ export async function createReservation(
   if (!warehouse) throw new NotFoundError('Warehouse', warehouseId);
   if (!product.isActive) throw new UnprocessableError('Product is no longer available');
 
-  // ---- STEP 2: Acquire distributed lock ----
-  // Lock key scoped to specific product+warehouse pair.
-  // This means reservations for DIFFERENT products proceed in parallel.
-  const lockResource = `inv:${productId}:${warehouseId}`;
-  const lock = await acquireLockWithRetry(lockResource);
-
-  if (!lock.acquired) {
-    throw new ConflictError(
-      'This product is currently being reserved by another customer. Please try again in a moment.'
-    );
-  }
-
   try {
-    // ---- STEP 3: Execute atomic transaction ----
+    // ---- STEP 2: Execute atomic transaction ----
     const reservation = await prisma.$transaction(
       async (tx) => {
-        // STEP 3a: Lock the inventory row with FOR UPDATE.
+        // STEP 2a: Lock the inventory row with FOR UPDATE.
         // This is a raw query because Prisma doesn't support FOR UPDATE natively.
         // The lock prevents other transactions from reading this row until we commit.
         const inventoryRows = await tx.$queryRaw<
@@ -151,11 +131,11 @@ export async function createReservation(
           throw new NotFoundError('Inventory', `${productId}:${warehouseId}`);
         }
 
-        // STEP 3b: Calculate availability INSIDE the transaction.
+        // STEP 2b: Calculate availability INSIDE the transaction.
         // This value is guaranteed fresh due to the FOR UPDATE lock.
         const availableStock = inventory.totalStock - inventory.reservedStock;
 
-        // STEP 3c: Validate quantity against available stock.
+        // STEP 2c: Validate quantity against available stock.
         // If insufficient, throw ConflictError (HTTP 409).
         if (quantity > availableStock) {
           throw new ConflictError(
@@ -164,7 +144,7 @@ export async function createReservation(
           );
         }
 
-        // STEP 3d: Atomically increment reservedStock.
+        // STEP 2d: Atomically increment reservedStock.
         // Using Prisma's increment to avoid read-modify-write race.
         await tx.inventory.update({
           where: { id: inventory.id },
@@ -173,7 +153,7 @@ export async function createReservation(
           },
         });
 
-        // STEP 3e: Create the reservation record.
+        // STEP 2e: Create the reservation record.
         const expiresAt = new Date(
           Date.now() + config.reservation.expiryMinutes * 60 * 1000
         );
@@ -202,13 +182,6 @@ export async function createReservation(
       }
     );
 
-    // ---- STEP 4: Post-transaction cleanup (non-blocking) ----
-    // Invalidate caches so other users see updated stock immediately
-    Promise.all([
-      cacheDelete(`inventory:product:${productId}`),
-      cacheDeletePattern('products:*'),
-    ]).catch(() => {/* cache invalidation failure is non-critical */});
-
     // Record audit log (fire-and-forget)
     recordAuditLog({
       action: AuditActions.RESERVATION_CREATED,
@@ -225,10 +198,9 @@ export async function createReservation(
     });
 
     return serializeReservation(reservation);
-  } finally {
-    // ---- STEP 5: Always release the distributed lock ----
-    // This runs even if the transaction fails, preventing deadlocks.
-    await releaseLock(lockResource, lock.token);
+  } catch (error) {
+    // Reraise explicit application errors
+    throw error;
   }
 }
 
@@ -260,55 +232,42 @@ export async function confirmReservation(reservationId: string): Promise<Reserva
     );
   }
 
-  const lockResource = `inv:${reservation.productId}:${reservation.warehouseId}`;
-  const lock = await acquireLockWithRetry(lockResource);
-
-  try {
-    const confirmed = await prisma.$transaction(async (tx) => {
-      // Decrement both totalStock (permanent sale) and reservedStock (release hold)
-      await tx.inventory.update({
-        where: {
-          productId_warehouseId: {
-            productId: reservation.productId,
-            warehouseId: reservation.warehouseId,
-          },
+  const confirmed = await prisma.$transaction(async (tx) => {
+    // Decrement both totalStock (permanent sale) and reservedStock (release hold)
+    await tx.inventory.update({
+      where: {
+        productId_warehouseId: {
+          productId: reservation.productId,
+          warehouseId: reservation.warehouseId,
         },
-        data: {
-          totalStock: { decrement: reservation.quantity },
-          reservedStock: { decrement: reservation.quantity },
-        },
-      });
-
-      return tx.reservation.update({
-        where: { id: reservationId },
-        data: {
-          status: 'CONFIRMED',
-          confirmedAt: new Date(),
-        },
-        include: RESERVATION_INCLUDES,
-      });
-    });
-
-    // Cache invalidation
-    Promise.all([
-      cacheDelete(`inventory:product:${reservation.productId}`),
-      cacheDeletePattern('products:*'),
-    ]).catch(() => {});
-
-    recordAuditLog({
-      action: AuditActions.RESERVATION_CONFIRMED,
-      entityType: 'Reservation',
-      entityId: reservationId,
-      metadata: {
-        reservationNumber: reservation.reservationNumber,
-        quantity: reservation.quantity,
+      },
+      data: {
+        totalStock: { decrement: reservation.quantity },
+        reservedStock: { decrement: reservation.quantity },
       },
     });
 
-    return serializeReservation(confirmed);
-  } finally {
-    await releaseLock(lockResource, lock.token);
-  }
+    return tx.reservation.update({
+      where: { id: reservationId },
+      data: {
+        status: 'CONFIRMED',
+        confirmedAt: new Date(),
+      },
+      include: RESERVATION_INCLUDES,
+    });
+  });
+
+  recordAuditLog({
+    action: AuditActions.RESERVATION_CONFIRMED,
+    entityType: 'Reservation',
+    entityId: reservationId,
+    metadata: {
+      reservationNumber: reservation.reservationNumber,
+      quantity: reservation.quantity,
+    },
+  });
+
+  return serializeReservation(confirmed);
 }
 
 /**
@@ -331,54 +290,42 @@ export async function releaseReservation(reservationId: string): Promise<Reserva
     );
   }
 
-  const lockResource = `inv:${reservation.productId}:${reservation.warehouseId}`;
-  const lock = await acquireLockWithRetry(lockResource);
-
-  try {
-    const released = await prisma.$transaction(async (tx) => {
-      // Release the reserved stock — makes it available for others
-      await tx.inventory.update({
-        where: {
-          productId_warehouseId: {
-            productId: reservation.productId,
-            warehouseId: reservation.warehouseId,
-          },
+  const released = await prisma.$transaction(async (tx) => {
+    // Release the reserved stock — makes it available for others
+    await tx.inventory.update({
+      where: {
+        productId_warehouseId: {
+          productId: reservation.productId,
+          warehouseId: reservation.warehouseId,
         },
-        data: {
-          reservedStock: { decrement: reservation.quantity },
-        },
-      });
-
-      return tx.reservation.update({
-        where: { id: reservationId },
-        data: {
-          status: 'RELEASED',
-          releasedAt: new Date(),
-        },
-        include: RESERVATION_INCLUDES,
-      });
-    });
-
-    Promise.all([
-      cacheDelete(`inventory:product:${reservation.productId}`),
-      cacheDeletePattern('products:*'),
-    ]).catch(() => {});
-
-    recordAuditLog({
-      action: AuditActions.RESERVATION_RELEASED,
-      entityType: 'Reservation',
-      entityId: reservationId,
-      metadata: {
-        reservationNumber: reservation.reservationNumber,
-        quantity: reservation.quantity,
-        reason: 'user_cancelled',
+      },
+      data: {
+        reservedStock: { decrement: reservation.quantity },
       },
     });
 
-    return serializeReservation(released);
-  } finally {
-    await releaseLock(lockResource, lock.token);
-  }
+    return tx.reservation.update({
+      where: { id: reservationId },
+      data: {
+        status: 'RELEASED',
+        releasedAt: new Date(),
+      },
+      include: RESERVATION_INCLUDES,
+    });
+  });
+
+  recordAuditLog({
+    action: AuditActions.RESERVATION_RELEASED,
+    entityType: 'Reservation',
+    entityId: reservationId,
+    metadata: {
+      reservationNumber: reservation.reservationNumber,
+      quantity: reservation.quantity,
+      reason: 'user_cancelled',
+    },
+  });
+
+  return serializeReservation(released);
 }
 
 /**

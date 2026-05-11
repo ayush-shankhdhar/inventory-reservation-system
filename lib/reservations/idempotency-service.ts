@@ -1,5 +1,4 @@
 import { prisma } from '@/lib/db/prisma';
-import { cacheGet, cacheSet, cacheDelete, CacheKeys } from '@/lib/redis/cache';
 import { hashPayload } from '@/utils';
 
 /**
@@ -7,8 +6,8 @@ import { hashPayload } from '@/utils';
  *
  * Flow:
  * 1. Client sends Idempotency-Key header with POST request
- * 2. We check Redis (fast) then DB (fallback) for existing response
- * 3. If found: return cached response without re-processing
+ * 2. We check DB for existing response
+ * 3. If found: return stored response without re-processing
  * 4. If not: process request, store response, return result
  *
  * This prevents duplicate reservations from network retries,
@@ -31,14 +30,7 @@ export async function checkIdempotency(
 ): Promise<IdempotencyResult> {
   if (!key) return { exists: false };
 
-  // Fast path: check Redis cache
-  const cacheKey = CacheKeys.idempotency(key, endpoint);
-  const cached = await cacheGet<{ response: unknown; statusCode: number }>(cacheKey);
-  if (cached) {
-    return { exists: true, response: cached.response, statusCode: cached.statusCode };
-  }
-
-  // Slow path: check database
+  // Check database for persistent record
   const existing = await prisma.idempotencyKey.findUnique({
     where: { key_endpoint: { key, endpoint } },
   });
@@ -52,12 +44,6 @@ export async function checkIdempotency(
         'Each unique request must use a unique idempotency key.'
       );
     }
-
-    // Warm the cache for future lookups
-    await cacheSet(cacheKey, {
-      response: existing.response,
-      statusCode: existing.statusCode,
-    }, 3600);
 
     return {
       exists: true,
@@ -87,10 +73,6 @@ export async function storeIdempotencyResult(
     await prisma.idempotencyKey.create({
       data: { key, endpoint, requestHash, response: response as any, statusCode },
     });
-
-    // Cache in Redis for fast future lookups (1 hour TTL)
-    const cacheKey = CacheKeys.idempotency(key, endpoint);
-    await cacheSet(cacheKey, { response, statusCode }, 3600);
   } catch (error: any) {
     // Unique constraint violation = concurrent duplicate request.
     // This is fine — the first one wins, second one will find it on retry.

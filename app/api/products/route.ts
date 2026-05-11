@@ -4,7 +4,6 @@ import { errorToResponse, successResponse } from '@/lib/errors';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { validateQuery, productQuerySchema } from '@/validators';
 import { generateTraceId } from '@/utils';
-import { cacheGet, cacheSet, CacheKeys } from '@/lib/redis/cache';
 import { hashPayload } from '@/utils';
 import type { ProductDTO, ResponseMeta } from '@/types';
 
@@ -19,13 +18,6 @@ export async function GET(request: NextRequest) {
 
     const params = validateQuery(request.nextUrl.searchParams, productQuerySchema);
     const { page, pageSize, search, category, inStock } = params;
-
-    // Check cache
-    const cacheKey = CacheKeys.productList(hashPayload(params));
-    const cached = await cacheGet<{ data: ProductDTO[]; meta: ResponseMeta }>(cacheKey);
-    if (cached) {
-      return successResponse(cached.data, traceId, 200, cached.meta);
-    }
 
     const skip = (page - 1) * pageSize;
     const where: any = { isActive: true };
@@ -103,9 +95,6 @@ export async function GET(request: NextRequest) {
       hasNext: page * pageSize < total,
       hasPrev: page > 1,
     };
-
-    // Cache for 30 seconds
-    await cacheSet(cacheKey, { data, meta }, 30);
 
     return successResponse(data, traceId, 200, meta as any);
   } catch (error) {

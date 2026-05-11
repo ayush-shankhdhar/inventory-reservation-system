@@ -1,24 +1,17 @@
-import { Ratelimit } from '@upstash/ratelimit';
-import { getRedis } from '@/lib/redis/client';
 import { config } from '@/config';
 import { RateLimitError } from '@/lib/errors';
 
 /**
- * Rate limiting using Upstash Ratelimit (token bucket algorithm).
+ * Rate limiting using local map store.
  *
- * WHY token bucket: It allows short bursts while maintaining a
- * steady average rate. This matches real user behavior — a user
- * might rapidly click through pages but shouldn't be penalized
- * for normal browsing patterns.
- *
- * Fallback: When Redis is unavailable, rate limiting is disabled.
- * This is a deliberate fail-open choice — availability over strict
- * rate enforcement in degraded states.
+ * NOTE: In a true distributed deployment without Redis, this is scoped
+ * to the specific serverless node. For global limiting, Redis is required.
+ * As requested, global Redis limiting is removed in favor of single-stack system.
  */
 
 type RateLimitTier = 'general' | 'reservation' | 'sensitive';
 
-// In-memory fallback for development (no Redis)
+// In-memory store for tracking requests locally
 const inMemoryStore = new Map<string, { count: number; resetAt: number }>();
 
 function getInMemoryLimiter(tier: RateLimitTier) {
@@ -45,38 +38,17 @@ function getInMemoryLimiter(tier: RateLimitTier) {
 }
 
 /**
- * Check rate limit for a request.
+ * Check rate limit for a request locally.
  * Throws RateLimitError if limit exceeded.
- *
- * @param identifier - Usually IP address or session ID
- * @param tier - Rate limit tier (different limits per operation type)
  */
 export async function checkRateLimit(
   identifier: string,
   tier: RateLimitTier = 'general'
 ): Promise<void> {
-  const redis = getRedis();
-  const tierConfig = config.rateLimit[tier];
-
-  if (redis) {
-    const ratelimit = new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(tierConfig.requests, `${tierConfig.windowMs}ms`),
-      analytics: false,
-      prefix: `ratelimit:${tier}`,
-    });
-
-    const result = await ratelimit.limit(identifier);
-    if (!result.success) {
-      throw new RateLimitError(result.reset ? result.reset - Date.now() : undefined);
-    }
-  } else {
-    // In-memory fallback for local development
-    const limiter = getInMemoryLimiter(tier);
-    const result = await limiter.limit(identifier);
-    if (!result.success) {
-      throw new RateLimitError();
-    }
+  const limiter = getInMemoryLimiter(tier);
+  const result = await limiter.limit(identifier);
+  if (!result.success) {
+    throw new RateLimitError();
   }
 }
 
