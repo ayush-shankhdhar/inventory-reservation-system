@@ -99,7 +99,7 @@ export const idParamSchema = z.object({
  */
 export async function validateBody<T>(
   request: Request,
-  schema: z.ZodSchema<T>
+  schema: z.ZodType<T, any, any>
 ): Promise<T> {
   const body = await request.json().catch(() => {
     throw new ValidationError('Invalid JSON in request body');
@@ -117,7 +117,7 @@ export async function validateBody<T>(
  */
 export function validateQuery<T>(
   searchParams: URLSearchParams,
-  schema: z.ZodSchema<T>
+  schema: z.ZodType<T, any, any>
 ): T {
   const params = Object.fromEntries(searchParams.entries());
   const result = schema.safeParse(params);

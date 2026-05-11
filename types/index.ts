@@ -1,5 +1,4 @@
 import { type ReservationStatus, type ProductCategory } from '@prisma/client';
-import type { Decimal } from '@prisma/client/runtime/library';
 
 // ==============================================================
 // API Response Types
