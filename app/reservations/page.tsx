@@ -23,16 +23,15 @@ export default async function ReservationsPage({ searchParams }: ReservationsPag
     ];
   }
 
-  const [reservations, total] = await Promise.all([
-    prisma.reservation.findMany({
-      where,
-      include: { product: true, warehouse: true },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    prisma.reservation.count({ where }),
-  ]);
+  // Sequential to avoid connection pool exhaustion on Supabase free tier
+  const reservations = await prisma.reservation.findMany({
+    where,
+    include: { product: true, warehouse: true },
+    orderBy: { createdAt: 'desc' },
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  });
+  const total = await prisma.reservation.count({ where });
 
   const serialized = reservations.map((r) => ({
     id: r.id,

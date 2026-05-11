@@ -18,34 +18,24 @@ export async function GET(request: NextRequest) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [
-      totalProducts,
-      totalWarehouses,
-      activeReservations,
-      confirmedToday,
-      expiredToday,
-      reservationsByStatus,
-      inventories,
-      recentActivity,
-    ] = await Promise.all([
-      prisma.product.count({ where: { isActive: true } }),
-      prisma.warehouse.count({ where: { isActive: true } }),
-      prisma.reservation.count({ where: { status: 'PENDING' } }),
-      prisma.reservation.count({
-        where: { status: 'CONFIRMED', confirmedAt: { gte: today } },
-      }),
-      prisma.reservation.count({
-        where: { status: 'EXPIRED', releasedAt: { gte: today } },
-      }),
-      prisma.reservation.groupBy({
-        by: ['status'],
-        _count: { id: true },
-      }),
-      prisma.inventory.findMany({
-        select: { totalStock: true, reservedStock: true, reorderThreshold: true },
-      }),
-      getRecentAuditLogs(10),
-    ]);
+    // Sequential queries to stay within Supabase connection limits
+    const totalProducts = await prisma.product.count({ where: { isActive: true } });
+    const totalWarehouses = await prisma.warehouse.count({ where: { isActive: true } });
+    const activeReservations = await prisma.reservation.count({ where: { status: 'PENDING' } });
+    const confirmedToday = await prisma.reservation.count({
+      where: { status: 'CONFIRMED', confirmedAt: { gte: today } },
+    });
+    const expiredToday = await prisma.reservation.count({
+      where: { status: 'EXPIRED', releasedAt: { gte: today } },
+    });
+    const reservationsByStatus = await prisma.reservation.groupBy({
+      by: ['status'],
+      _count: { id: true },
+    });
+    const inventories = await prisma.inventory.findMany({
+      select: { totalStock: true, reservedStock: true, reorderThreshold: true },
+    });
+    const recentActivity = await getRecentAuditLogs(10);
 
     const lowStockCount = inventories.filter(
       (inv) => inv.totalStock - inv.reservedStock <= inv.reorderThreshold

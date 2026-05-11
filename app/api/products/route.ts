@@ -31,20 +31,19 @@ export async function GET(request: NextRequest) {
     }
     if (category) where.category = category;
 
-    const [products, total] = await Promise.all([
-      prisma.product.findMany({
-        where,
-        include: {
-          inventories: {
-            include: { warehouse: true },
-          },
+    // Sequential to stay within Supabase connection limits
+    const products = await prisma.product.findMany({
+      where,
+      include: {
+        inventories: {
+          include: { warehouse: true },
         },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: pageSize,
-      }),
-      prisma.product.count({ where }),
-    ]);
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: pageSize,
+    });
+    const total = await prisma.product.count({ where });
 
     let data: ProductDTO[] = products.map((p) => ({
       id: p.id,

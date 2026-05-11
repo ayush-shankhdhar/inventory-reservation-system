@@ -5,45 +5,56 @@ import pg from 'pg';
 /**
  * Singleton Prisma Client with pg driver adapter (Prisma v7).
  *
- * Prisma v7 requires explicit driver adapters instead of connection
- * strings in the schema. We use node-postgres (pg) directly, which
- * gives us full control over connection pooling and supports
- * interactive transactions with FOR UPDATE locks.
+ * Uses a single connection (not a pool) to stay within Supabase's
+ * free-tier limit of 15 session-mode connections. Previous dev server
+ * crashes can leave ghost sessions lingering for minutes, so we
+ * minimize our footprint to exactly 1 connection.
  *
- * IMPORTANT: We use DIRECT_URL (not the pooled DATABASE_URL) because
- * PgBouncer's transaction pooling mode doesn't support the extended
- * query protocol needed for prepared statements in interactive transactions.
+ * The pooled DATABASE_URL (port 6543, PgBouncer) is preferred because
+ * it multiplexes connections on the server side. Falls back to
+ * DIRECT_URL (port 5432) if needed.
  */
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
+  pgPool: pg.Pool | undefined;
 };
 
-function createPrismaClient(): PrismaClient {
-  const connectionString = process.env.DIRECT_URL || process.env.DATABASE_URL;
-
-  if (!connectionString) {
-    throw new Error('Missing DIRECT_URL or DATABASE_URL environment variable');
+function initializePrisma() {
+  if (globalForPrisma.prisma && globalForPrisma.pgPool) {
+    return { prisma: globalForPrisma.prisma, pool: globalForPrisma.pgPool };
   }
 
+  const connectionString = process.env.DATABASE_URL || process.env.DIRECT_URL;
+
+  if (!connectionString) {
+    throw new Error('Missing DATABASE_URL or DIRECT_URL environment variable');
+  }
+
+  // Single connection — prevents session exhaustion on Supabase free tier.
+  // PgBouncer (port 6543) handles multiplexing server-side.
   const pool = new pg.Pool({
     connectionString,
-    max: 10,
+    max: 1,
+    idleTimeoutMillis: 20000,
+    connectionTimeoutMillis: 10000,
   });
 
   const adapter = new PrismaPg(pool);
 
-  return new PrismaClient({
+  const client = new PrismaClient({
     adapter,
-    log:
-      process.env.NODE_ENV === 'development'
-        ? ['warn', 'error']
-        : ['error'],
+    log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
   });
+
+  return { prisma: client, pool };
 }
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+const { prisma: clientInstance, pool: poolInstance } = initializePrisma();
 
 if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prisma = prisma;
+  globalForPrisma.prisma = clientInstance;
+  globalForPrisma.pgPool = poolInstance;
 }
+
+export const prisma = clientInstance;

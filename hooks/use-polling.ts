@@ -15,7 +15,10 @@ export function usePolling<T>(
   const [error, setError] = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
+  
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  }, [fetcher]);
 
   const fetchData = useCallback(async () => {
     try {

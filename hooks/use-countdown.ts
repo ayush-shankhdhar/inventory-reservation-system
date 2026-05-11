@@ -15,7 +15,6 @@ export function useCountdown(expiresAt: string | Date) {
   const [remaining, setRemaining] = useState(getRemaining);
 
   useEffect(() => {
-    setRemaining(getRemaining());
     const interval = setInterval(() => {
       const r = getRemaining();
       setRemaining(r);

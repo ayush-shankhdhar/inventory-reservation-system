@@ -24,19 +24,18 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
   }
   if (category) where.category = category;
 
-  const [products, total, warehouses] = await Promise.all([
-    prisma.product.findMany({
-      where,
-      include: {
-        inventories: { include: { warehouse: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    prisma.product.count({ where }),
-    prisma.warehouse.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
-  ]);
+  // Sequential to avoid connection pool exhaustion on Supabase free tier
+  const products = await prisma.product.findMany({
+    where,
+    include: {
+      inventories: { include: { warehouse: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  });
+  const total = await prisma.product.count({ where });
+  const warehouses = await prisma.warehouse.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } });
 
   const serializedProducts: ProductDTO[] = products.map((p) => ({
     id: p.id,

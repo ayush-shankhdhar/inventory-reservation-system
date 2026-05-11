@@ -20,11 +20,14 @@ const navigation = [
   { name: 'Reservations', href: '/reservations', icon: ClipboardList },
 ];
 
-export function Sidebar() {
-  const pathname = usePathname();
-  const [mobileOpen, setMobileOpen] = useState(false);
-
-  const NavContent = () => (
+function NavContent({ 
+  pathname, 
+  setMobileOpen 
+}: { 
+  pathname: string; 
+  setMobileOpen: (o: boolean) => void 
+}) {
+  return (
     <div className="flex flex-col h-full">
       {/* Logo */}
       <div className="flex items-center gap-3 px-6 py-5 border-b border-sidebar-border">
@@ -68,12 +71,17 @@ export function Sidebar() {
       </div>
     </div>
   );
+}
+
+export function Sidebar() {
+  const pathname = usePathname();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
     <>
       {/* Desktop sidebar */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-sidebar border-r border-sidebar-border z-40">
-        <NavContent />
+        <NavContent pathname={pathname} setMobileOpen={setMobileOpen} />
       </aside>
 
       {/* Mobile header */}
@@ -110,7 +118,7 @@ export function Sidebar() {
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               className="lg:hidden fixed inset-y-0 left-0 z-50 w-64 bg-sidebar border-r border-sidebar-border"
             >
-              <NavContent />
+              <NavContent pathname={pathname} setMobileOpen={setMobileOpen} />
             </motion.aside>
           </>
         )}
