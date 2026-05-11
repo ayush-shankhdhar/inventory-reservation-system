@@ -1,0 +1,223 @@
+// ==============================================================
+// Prisma Schema — Multi-Warehouse Inventory Reservation System
+//
+// Design decisions:
+// - CUID IDs for distributed-safe, URL-friendly identifiers
+// - Composite indexes on hot query paths (inventory lookups, reservation expiry)
+// - Unique constraints to prevent duplicate inventory rows per product+warehouse
+// - Enum types for type-safe status management
+// - Cascading deletes where parent-child relationship is strict
+// - Separate totalStock and reservedStock to compute availability atomically
+// ==============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==============================================================
+// Enums
+// ==============================================================
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  RELEASED
+  EXPIRED
+}
+
+enum ProductCategory {
+  ELECTRONICS
+  CLOTHING
+  HOME
+  SPORTS
+  ACCESSORIES
+  BEAUTY
+  FOOD
+  OTHER
+}
+
+// ==============================================================
+// Product — Catalog item available for reservation
+// ==============================================================
+
+model Product {
+  id          String          @id @default(cuid())
+  sku         String          @unique
+  slug        String          @unique
+  name        String
+  description String?
+  image       String?
+  category    ProductCategory @default(OTHER)
+  price       Decimal         @db.Decimal(10, 2)
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  inventories  Inventory[]
+  reservations Reservation[]
+
+  @@index([category])
+  @@index([isActive, category])
+  @@index([slug])
+  @@map("products")
+}
+
+// ==============================================================
+// Warehouse — Physical storage location
+// ==============================================================
+
+model Warehouse {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  city      String
+  address   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  inventories  Inventory[]
+  reservations Reservation[]
+
+  @@index([city])
+  @@map("warehouses")
+}
+
+// ==============================================================
+// Inventory — Stock levels per product per warehouse
+//
+// availableStock is always computed as: totalStock - reservedStock
+// This avoids stale cached values and ensures correctness under
+// concurrent modifications when combined with row-level locking.
+// ==============================================================
+
+model Inventory {
+  id               String   @id @default(cuid())
+  productId        String
+  warehouseId      String
+  totalStock       Int      @default(0)
+  reservedStock    Int      @default(0)
+  reorderThreshold Int      @default(10)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  // Composite unique: one inventory row per product-warehouse pair.
+  // This is critical for the locking strategy — we lock exactly one row
+  // per product+warehouse during reservation.
+  @@unique([productId, warehouseId])
+  // Optimized index for "find all warehouses stocking product X"
+  @@index([productId])
+  // Optimized index for "find all products in warehouse Y"
+  @@index([warehouseId])
+  // Low stock query optimization
+  @@index([totalStock, reservedStock])
+  @@map("inventories")
+}
+
+// ==============================================================
+// Reservation — Temporary hold on inventory during checkout
+//
+// Lifecycle: PENDING → CONFIRMED (payment success)
+//                    → RELEASED  (user cancels)
+//                    → EXPIRED   (timeout, auto-released by cron)
+//
+// reservedStock is incremented on creation and decremented on
+// confirm/release/expire. totalStock is only decremented on confirm.
+// ==============================================================
+
+model Reservation {
+  id                String            @id @default(cuid())
+  reservationNumber String            @unique
+  productId         String
+  warehouseId       String
+  quantity          Int
+  status            ReservationStatus @default(PENDING)
+  expiresAt         DateTime
+  confirmedAt       DateTime?
+  releasedAt        DateTime?
+  sessionId         String?
+  metadata          Json?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  // Hot query: find all pending reservations that have expired
+  // Used by the cron job every minute to batch-expire
+  @@index([status, expiresAt])
+  // Query: all reservations for a given product
+  @@index([productId])
+  // Query: all reservations for a given warehouse
+  @@index([warehouseId])
+  // Query: reservations by session for user-facing history
+  @@index([sessionId])
+  // Query: lookup by reservation number
+  @@index([reservationNumber])
+  @@map("reservations")
+}
+
+// ==============================================================
+// IdempotencyKey — Ensures exactly-once processing for mutations
+//
+// Client sends Idempotency-Key header. We hash the request body
+// and store the response. Repeated requests with the same key
+// return the cached response without re-processing.
+// ==============================================================
+
+model IdempotencyKey {
+  id          String   @id @default(cuid())
+  key         String
+  endpoint    String
+  requestHash String
+  response    Json
+  statusCode  Int
+  createdAt   DateTime @default(now())
+
+  // Composite unique: same key can be reused across different endpoints
+  @@unique([key, endpoint])
+  // TTL-based cleanup query
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
+
+// ==============================================================
+// AuditLog — Immutable event log for compliance and debugging
+// ==============================================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  ipAddress  String?
+  sessionId  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ==============================================================
+// UserSession — Tracks anonymous sessions for reservation history
+// ==============================================================
+
+model UserSession {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+  @@map("user_sessions")
+}
